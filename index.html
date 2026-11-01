@@ -1,9 +1,9 @@
 <!doctype html>
 <!--
   Попутники на дачу — розклад поїздок «на дачу / з дачі» для садівників.
-  ВЕРСІЯ СТОРІНКИ: 1.1.0 (01.11.2026) — показується внизу сторінки («Версія сторінки …»).
+  ВЕРСІЯ СТОРІНКИ: 1.2.0 (01.11.2026) — показується внизу сторінки («Версія сторінки …»).
   Змінюючи файл, піднімайте версію в ТРЬОХ місцях: цей рядок, текст внизу сторінки (id="ver") і const PAGE_VERSION.
-  Історія: 1.0.0 — перша версія: заставка, роль (водій / пасажир), розклад дня з підсвіткою найближчої поїздки, додавання, бронювання; 1.1.0 — автор може змінити свій запис (час, місце, кількість місць, «зайнято поза застосунком»), на поїздці видно скільки заброньовано й скільки залишилось.
+  Історія: 1.0.0 — перша версія: заставка, роль (водій / пасажир), розклад дня з підсвіткою найближчої поїздки, додавання, бронювання; 1.1.0 — автор може змінити свій запис (час, місце, кількість місць, «зайнято поза застосунком»), на поїздці видно скільки заброньовано й скільки залишилось; 1.2.0 — скасована автором поїздка лишається в розкладі сірою з позначкою «Скасовано» до дати поїздки.
   Дані зберігає сервіс Apps Script (аркуші rides і ride_book). Телефони й Telegram-імена в розкладі НЕ показуються: після бронювання бот надсилає контакти обом у Telegram.
 -->
 <html lang="uk">
@@ -84,7 +84,7 @@
 "use strict";
 var API_URL = "https://script.google.com/macros/s/AKfycbzxymDp66D5HwsPivSfKU3FBc0a0pQXMEWknC-slrBHMl7hldZNi4Ajw_k9l3aT8aKhVg/exec";
 var TG_LINK = "https://t.me/weafher_daha_bot/rides";   // пряме посилання на застосунок у Telegram (створюється в BotFather командою /newapp, коротка назва rides)
-var PAGE_VERSION = "1.1.0 (01.11.2026)";
+var PAGE_VERSION = "1.2.0 (01.11.2026)";
 var tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
 var inTg = !!(tg && tg.initData);
@@ -139,7 +139,7 @@ function draw() {
   if (S.sheet) return;     // не перемальовуємо, поки відкрита форма
   var h = "";
   if (!S.role) h = roleScreen(); else h = listScreen();
-  root.innerHTML = h + '<p class="note ver" id="ver">Версія сторінки 1.1.0 (01.11.2026)</p>';
+  root.innerHTML = h + '<p class="note ver" id="ver">Версія сторінки 1.2.0 (01.11.2026)</p>';
   bind();
   if (S.role) { var el = document.querySelector(".card.now"); if (el && !S.scrolled) { S.scrolled = true; el.scrollIntoView({ block: "center" }); } }
 }
@@ -172,7 +172,7 @@ function listScreen() {
     return isDrv ? r.role === "passenger" : r.role === "driver";
   });
   var today = S.day === d.now.date, nm = nowMin(), nextId = "";
-  if (today) { list.some(function (r) { if (r.time && tmin(r.time) >= nm) { nextId = r.id; return true; } return false; }); }
+  if (today) { list.some(function (r) { if (r.status !== "cancelled" && r.time && tmin(r.time) >= nm) { nextId = r.id; return true; } return false; }); }
   var anytime = list.filter(function (r) { return !r.time; }), timed = list.filter(function (r) { return r.time; });
   if (!list.length) h += '<p class="empty">На цей день записів немає.' + (inTg ? " Додайте свій кнопкою нижче." : "") + "</p>";
   if (anytime.length) { h += '<p class="grp">Протягом дня</p>'; anytime.forEach(function (r) { h += card(r, false, false); }); }
@@ -182,14 +182,15 @@ function listScreen() {
 }
 
 function card(r, past, now) {
-  var isReq = r.role === "passenger";
+  var isReq = r.role === "passenger", off = r.status === "cancelled";
+  if (off) { past = true; now = false; }
   var cls = "card" + (now ? " now" : "") + (past ? " past" : "") + (isReq ? " req" : "");
   var where = r.dir === "to" ? "Одеса (" + esc(r.place) + ") → " + esc(S.data.cfg.dacha) : esc(S.data.cfg.dacha) + " → Одеса (" + esc(r.place) + ")";
   var h = '<div class="' + cls + '"><div class="row"><span class="time">' + (r.time ? esc(r.time) : "—") + "</span>";
-  h += '<span class="tag' + (isReq ? " req" : "") + '">' + (now ? "Найближча · " : "") + (isReq ? "Шукає попутника" : (r.left > 0 ? "Вільно: " + r.left + " з " + r.seats : "Місць немає")) + "</span></div>";
-  h += '<div>' + where + '</div><div class="meta">' + esc(r.name) + (isReq ? " · потрібно місць: " + r.seats : " · заброньовано: " + (r.booked_seats || 0) + (r.outside ? ", поза застосунком: " + r.outside : "")) + (r.note ? " · " + esc(r.note) : "") + "</div>";
+  h += '<span class="tag' + (isReq ? " req" : "") + '">' + (now ? "Найближча · " : "") + (off ? "Скасовано" : isReq ? "Шукає попутника" : (r.left > 0 ? "Вільно: " + r.left + " з " + r.seats : "Місць немає")) + "</span></div>";
+  h += '<div>' + where + '</div><div class="meta">' + esc(r.name) + (off ? "" : isReq ? " · потрібно місць: " + r.seats : " · заброньовано: " + (r.booked_seats || 0) + (r.outside ? ", поза застосунком: " + r.outside : "")) + (r.note ? " · " + esc(r.note) : "") + "</div>";
   var a = "";
-  if (past && !r.mine) a = "";
+  if (off || (past && !r.mine)) a = "";
   else if (r.mine) a = '<button class="btn" data-edit="' + r.id + '">Змінити</button><button class="btn bad" data-del="' + r.id + '">Видалити</button>' + (r.responses ? '<span class="meta">Відгуків: ' + r.responses + "</span>" : "");
   else if (!inTg) a = '<a class="btn" style="text-decoration:none" href="' + TG_LINK + '">' + (isReq ? "Відгукнутись у Telegram" : "Забронювати в Telegram") + "</a>";
   else if (r.booked) a = '<span class="meta">✅ Ви записані</span><button class="btn sec" data-unbook="' + r.id + '">Скасувати</button>';
