@@ -1,0 +1,293 @@
+<!doctype html>
+<!--
+  Попутники на дачу — розклад поїздок «на дачу / з дачі» для садівників.
+  ВЕРСІЯ СТОРІНКИ: 1.0.0 (01.11.2026) — показується внизу сторінки («Версія сторінки …»).
+  Змінюючи файл, піднімайте версію в ТРЬОХ місцях: цей рядок, текст внизу сторінки (id="ver") і const PAGE_VERSION.
+  Історія: 1.0.0 — перша версія: заставка, роль (водій / пасажир), розклад дня з підсвіткою найближчої поїздки, додавання, бронювання.
+  Дані зберігає сервіс Apps Script (аркуші rides і ride_book). Телефони й Telegram-імена в розкладі НЕ показуються: після бронювання бот надсилає контакти обом у Telegram.
+-->
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<title>Попутники на дачу</title>
+<style>
+  :root {
+    --bg:#eef2f3; --surface:#fff; --fg:#14232a; --muted:#55696f; --line:#cfdadd; --accent:#0b6b78; --accent-fg:#fff;
+    --warn:#a4380f; --now-bg:#e1f0f2; --req:#8a5a00; --req-bg:#fff4dc; --past:.5;
+    --font:"Onest",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg:#0f1a1e; --surface:#17262c; --fg:#e6eff1; --muted:#9bb0b6; --line:#2b4048; --accent:#5cc1cf; --accent-fg:#07262b; --warn:#ff9d73; --now-bg:#19343b; --req:#f0c46a; --req-bg:#33290f; color-scheme:dark; }
+  }
+  :root[data-theme="dark"] { --bg:#0f1a1e; --surface:#17262c; --fg:#e6eff1; --muted:#9bb0b6; --line:#2b4048; --accent:#5cc1cf; --accent-fg:#07262b; --warn:#ff9d73; --now-bg:#19343b; --req:#f0c46a; --req-bg:#33290f; color-scheme:dark; }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&display=swap">
+<style>
+  html, body { margin:0; height:100%; overflow:hidden; }
+  body { background:var(--bg); color:var(--fg); font:16px/1.5 var(--font); }
+  #splash { position:fixed; inset:0; z-index:99; background:#fff; display:flex; align-items:center; justify-content:center; transition:opacity .35s; }
+  #splash img { width:100%; max-width:640px; height:auto; display:block; }
+  #splash.hide { opacity:0; pointer-events:none; }
+  #app { position:fixed; inset:0; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; box-sizing:border-box;
+    padding:22px max(16px, env(safe-area-inset-right,0px)) 90px max(16px, env(safe-area-inset-left,0px)); }
+  main { max-width:480px; margin:0 auto; display:flex; flex-direction:column; gap:14px; }
+  h1 { font-size:1.45rem; line-height:1.2; margin:0; letter-spacing:-.01em; text-wrap:balance; }
+  .lead { margin:2px 0 0; color:var(--muted); font-size:.95rem; }
+  button { font:inherit; cursor:pointer; }
+  .big { display:flex; align-items:center; gap:14px; width:100%; text-align:left; background:var(--surface); color:var(--fg); border:1px solid var(--line); border-radius:12px; padding:18px; font-size:1.15rem; font-weight:600; }
+  .big small { display:block; font-weight:400; color:var(--muted); font-size:.88rem; }
+  .big .ic { font-size:2rem; }
+  .banner { background:var(--req-bg); color:var(--fg); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:.92rem; }
+  .banner a { color:var(--accent); font-weight:600; }
+  .top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .link { background:none; border:0; color:var(--accent); padding:6px 2px; font-size:.95rem; }
+  .seg { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .seg button, .days button { background:var(--surface); color:var(--fg); border:1px solid var(--line); border-radius:10px; padding:10px 8px; font-weight:600; }
+  .seg button.on, .days button.on { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
+  .days { display:flex; gap:6px; overflow-x:auto; padding-bottom:4px; }
+  .days button { flex:0 0 auto; min-width:58px; line-height:1.2; padding:8px 10px; font-size:.9rem; }
+  .days small { display:block; font-weight:400; opacity:.85; }
+  .grp { margin:6px 0 0; font-size:.85rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:12px 14px; display:flex; flex-direction:column; gap:6px; }
+  .card.now { border:2px solid var(--accent); background:var(--now-bg); }
+  .card.past { opacity:var(--past); }
+  .card.req { border-left:5px solid var(--req); }
+  .row { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .time { font-size:1.35rem; font-weight:700; font-variant-numeric:tabular-nums; }
+  .tag { font-size:.78rem; font-weight:600; padding:2px 8px; border-radius:20px; background:var(--accent); color:var(--accent-fg); white-space:nowrap; }
+  .tag.req { background:var(--req-bg); color:var(--req); border:1px solid var(--req); }
+  .meta { color:var(--muted); font-size:.92rem; }
+  .act { display:flex; gap:8px; flex-wrap:wrap; margin-top:4px; }
+  .btn { background:var(--accent); color:var(--accent-fg); border:0; border-radius:10px; padding:10px 16px; font-weight:600; }
+  .btn.sec { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+  .btn.bad { background:transparent; color:var(--warn); border:1px solid var(--warn); }
+  .btn[disabled] { opacity:.5; }
+  .empty { text-align:center; color:var(--muted); padding:28px 8px; }
+  .fab { position:fixed; right:max(16px, env(safe-area-inset-right,0px)); bottom:max(16px, env(safe-area-inset-bottom,0px)); z-index:5; box-shadow:0 6px 18px rgba(0,0,0,.25); padding:14px 20px; border-radius:30px; }
+  .sheet { position:fixed; inset:0; z-index:50; background:rgba(0,0,0,.45); display:flex; align-items:flex-end; justify-content:center; }
+  .sheet > div { background:var(--surface); width:100%; max-width:480px; max-height:92%; overflow-y:auto; border-radius:16px 16px 0 0; padding:18px 16px 24px; box-sizing:border-box; display:flex; flex-direction:column; gap:12px; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:.9rem; color:var(--muted); }
+  input, select, textarea { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px; width:100%; box-sizing:border-box; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .err { color:var(--warn); font-size:.92rem; min-height:1.2em; }
+  .ok { background:var(--now-bg); border:1px solid var(--accent); border-radius:10px; padding:12px; font-size:.95rem; }
+  .note { color:var(--muted); font-size:.82rem; margin:0; }
+  .ver { text-align:center; }
+</style>
+</head>
+<body>
+<div id="splash"><img src="rides.png" alt="Попутники на дачу" id="splashImg"></div>
+<div id="app"><main id="root"></main></div>
+<script>
+"use strict";
+var API_URL = "https://script.google.com/macros/s/AKfycbzxymDp66D5HwsPivSfKU3FBc0a0pQXMEWknC-slrBHMl7hldZNi4Ajw_k9l3aT8aKhVg/exec";
+var TG_LINK = "https://t.me/weafher_daha_bot/rides";   // пряме посилання на застосунок у Telegram (створюється в BotFather командою /newapp, коротка назва rides)
+var PAGE_VERSION = "1.0.0 (01.11.2026)";
+var tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+var inTg = !!(tg && tg.initData);
+var $ = function (id) { return document.getElementById(id); };
+var root = $("root");
+
+/* ---- заставка ---- */
+(function () {
+  var sp = $("splash"), im = $("splashImg"), done = false;
+  function close() { if (done) return; done = true; sp.className = "hide"; setTimeout(function () { if (sp.parentNode) sp.parentNode.removeChild(sp); }, 400); }
+  im.onerror = close; sp.onclick = close; setTimeout(close, 2000);
+})();
+
+/* ---- стан ---- */
+var S = { role: lsGet("role"), dir: "to", day: null, data: null, loadedAt: 0, err: "", sheet: null };
+function lsGet(k) { try { return localStorage.getItem("rides_" + k) || ""; } catch (e) { return ""; } }
+function lsSet(k, v) { try { localStorage.setItem("rides_" + k, v); } catch (e) {} }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+
+var ERR = {
+  auth: "Відкрийте застосунок із Telegram, щоб додавати й бронювати.", not_member: "Додавати й бронювати можуть підписники каналу.",
+  telegram: "Telegram зараз не відповідає, спробуйте за хвилину.", rate: "Занадто швидко, спробуйте ще раз.", dup: "Такий запис у вас уже є.",
+  limit: "Забагато активних записів. Видаліть непотрібні.", bad_date: "Оберіть дату від сьогодні й до 30 днів уперед.", bad_time: "Перевірте час.",
+  bad_place: "Вкажіть місце в Одесі.", bad_seats: "Перевірте кількість місць.", bad_input: "Перевірте форму.", no_seats: "Вільних місць уже менше.",
+  already: "Ви вже записані на цю поїздку.", own: "Це ваш власний запис.", not_found: "Запис уже не існує. Оновіть розклад.", server: "Сервіс тимчасово недоступний.", net: "Немає зв'язку з сервісом."
+};
+function errText(c) { return ERR[c] || ERR.server; }
+
+function api(body) {
+  body.initData = (tg && tg.initData) || "";
+  return fetch(API_URL, { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(body) })
+    .then(function (r) { return r.json(); }).catch(function () { return { ok: false, error: "net" }; });
+}
+
+/* ---- час за сервером (Київ): годинник телефона не довіряємо ---- */
+function nowMin() { var d = S.data; if (!d) return 0; var p = d.now.time.split(":"); return Number(p[0]) * 60 + Number(p[1]) + Math.floor((Date.now() - S.loadedAt) / 60000); }
+function tmin(t) { var p = t.split(":"); return Number(p[0]) * 60 + Number(p[1]); }
+var WD = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"];
+function addDays(iso, n) { var d = new Date(iso + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function dayLabel(iso) { var d = new Date(iso + "T12:00:00Z"); return { w: WD[d.getUTCDay()], n: iso.slice(8, 10) + "." + iso.slice(5, 7) }; }
+
+function load(quiet) {
+  if (!quiet) { S.err = ""; draw(); }
+  return api({ action: "ride_list" }).then(function (j) {
+    if (!j.ok) { S.err = errText(j.error); draw(); return; }
+    S.data = j; S.loadedAt = Date.now(); S.err = ""; if (!S.day) S.day = j.now.date; draw();
+  });
+}
+
+/* ---- екрани ---- */
+function draw() {
+  if (S.sheet) return;     // не перемальовуємо, поки відкрита форма
+  var h = "";
+  if (!S.role) h = roleScreen(); else h = listScreen();
+  root.innerHTML = h + '<p class="note ver" id="ver">Версія сторінки 1.0.0 (01.11.2026)</p>';
+  bind();
+  if (S.role) { var el = document.querySelector(".card.now"); if (el && !S.scrolled) { S.scrolled = true; el.scrollIntoView({ block: "center" }); } }
+}
+
+function tgBanner() {
+  return inTg ? "" : '<div class="banner">Ви переглядаєте розклад. Щоб додати поїздку або забронювати місце, відкрийте застосунок у Telegram: <a href="' + TG_LINK + '">відкрити в Telegram</a>.</div>';
+}
+
+function roleScreen() {
+  return '<div><h1>Попутники на дачу</h1><p class="lead">Поїздки садівників: на дачу й з дачі. Оберіть, хто ви.</p></div>' + tgBanner() +
+    '<button class="big" data-role="driver"><span class="ic">🚗</span><span>Я водій<small>Пропоную місця або відгукуюсь на запити</small></span></button>' +
+    '<button class="big" data-role="passenger"><span class="ic">🧍</span><span>Я пасажир<small>Шукаю машину</small></span></button>' +
+    '<p class="note">Телефони й імена в Telegram в розкладі не показуються. Після бронювання бот надсилає контакти обом у Telegram. Якщо автор ще не запускав бота, застосунок покаже його контакт вам.</p>';
+}
+
+function listScreen() {
+  var d = S.data, h = "";
+  var isDrv = S.role === "driver";
+  h += '<div class="top"><div><h1>' + (isDrv ? "🚗 Розклад водія" : "🧍 Розклад пасажира") + '</h1></div><button class="link" id="chRole">змінити</button></div>';
+  h += tgBanner();
+  h += '<div class="seg"><button data-dir="to" class="' + (S.dir === "to" ? "on" : "") + '">🏠 На дачу</button><button data-dir="from" class="' + (S.dir === "from" ? "on" : "") + '">🌆 З дачі</button></div>';
+  if (S.err) h += '<p class="err">' + esc(S.err) + ' <button class="link" id="retry">Оновити</button></p>';
+  if (!d) return h + '<p class="empty">Завантажую…</p>';
+  h += '<div class="days">';
+  for (var i = 0; i < 8; i++) { var iso = addDays(d.now.date, i), L = dayLabel(iso); h += '<button data-day="' + iso + '" class="' + (S.day === iso ? "on" : "") + '">' + (i === 0 ? "Сьогодні" : L.w) + "<small>" + L.n + "</small></button>"; }
+  h += "</div>";
+  var list = d.rides.filter(function (r) {
+    if (r.date !== S.day || r.dir !== S.dir) return false;
+    if (r.mine) return true;
+    return isDrv ? r.role === "passenger" : r.role === "driver";
+  });
+  var today = S.day === d.now.date, nm = nowMin(), nextId = "";
+  if (today) { list.some(function (r) { if (r.time && tmin(r.time) >= nm) { nextId = r.id; return true; } return false; }); }
+  var anytime = list.filter(function (r) { return !r.time; }), timed = list.filter(function (r) { return r.time; });
+  if (!list.length) h += '<p class="empty">На цей день записів немає.' + (inTg ? " Додайте свій кнопкою нижче." : "") + "</p>";
+  if (anytime.length) { h += '<p class="grp">Протягом дня</p>'; anytime.forEach(function (r) { h += card(r, false, false); }); }
+  if (timed.length) { h += '<p class="grp">За часом</p>'; timed.forEach(function (r) { h += card(r, today && tmin(r.time) < nm, r.id === nextId); }); }
+  if (inTg) h += '<button class="btn fab" id="add">➕ ' + (isDrv ? "Додати поїздку" : "Шукаю попутника") + "</button>";
+  return h;
+}
+
+function card(r, past, now) {
+  var isReq = r.role === "passenger";
+  var cls = "card" + (now ? " now" : "") + (past ? " past" : "") + (isReq ? " req" : "");
+  var where = r.dir === "to" ? "Одеса (" + esc(r.place) + ") → " + esc(S.data.cfg.dacha) : esc(S.data.cfg.dacha) + " → Одеса (" + esc(r.place) + ")";
+  var h = '<div class="' + cls + '"><div class="row"><span class="time">' + (r.time ? esc(r.time) : "—") + "</span>";
+  h += '<span class="tag' + (isReq ? " req" : "") + '">' + (now ? "Найближча · " : "") + (isReq ? "Шукає попутника" : (r.left > 0 ? "Вільно місць: " + r.left : "Місць немає")) + "</span></div>";
+  h += '<div>' + where + '</div><div class="meta">' + esc(r.name) + (isReq ? " · потрібно місць: " + r.seats : "") + (r.note ? " · " + esc(r.note) : "") + "</div>";
+  var a = "";
+  if (past && !r.mine) a = "";
+  else if (r.mine) a = '<button class="btn bad" data-del="' + r.id + '">Видалити</button>' + (r.responses ? '<span class="meta">Відгуків: ' + r.responses + "</span>" : "");
+  else if (!inTg) a = '<a class="btn" style="text-decoration:none" href="' + TG_LINK + '">' + (isReq ? "Відгукнутись у Telegram" : "Забронювати в Telegram") + "</a>";
+  else if (r.booked) a = '<span class="meta">✅ Ви записані</span><button class="btn sec" data-unbook="' + r.id + '">Скасувати</button>';
+  else if (isReq) a = '<button class="btn" data-book="' + r.id + '">Запропонувати місце</button>';
+  else if (r.left > 0) a = '<button class="btn" data-book="' + r.id + '">Забронювати</button>';
+  return h + (a ? '<div class="act">' + a + "</div>" : "") + "</div>";
+}
+
+/* ---- події ---- */
+function bind() {
+  var q = function (sel, fn) { Array.prototype.forEach.call(root.querySelectorAll(sel), fn); };
+  q("[data-role]", function (b) { b.onclick = function () { S.role = b.getAttribute("data-role"); lsSet("role", S.role); S.scrolled = false; draw(); }; });
+  q("[data-dir]", function (b) { b.onclick = function () { S.dir = b.getAttribute("data-dir"); S.scrolled = false; draw(); }; });
+  q("[data-day]", function (b) { b.onclick = function () { S.day = b.getAttribute("data-day"); S.scrolled = false; draw(); }; });
+  q("[data-book]", function (b) { b.onclick = function () { openBook(b.getAttribute("data-book")); }; });
+  q("[data-unbook]", function (b) { b.onclick = function () { unbook(b.getAttribute("data-unbook"), b); }; });
+  q("[data-del]", function (b) { b.onclick = function () { del(b.getAttribute("data-del"), b); }; });
+  var c = $("chRole"); if (c) c.onclick = function () { S.role = ""; lsSet("role", ""); draw(); };
+  var rt = $("retry"); if (rt) rt.onclick = function () { load(); };
+  var ad = $("add"); if (ad) ad.onclick = openAdd;
+}
+
+function needWrite() { try { if (tg && tg.requestWriteAccess) tg.requestWriteAccess(function () {}); } catch (e) {} }
+
+function sheet(html) { S.sheet = true; var s = document.createElement("div"); s.className = "sheet"; s.id = "sh"; s.innerHTML = "<div>" + html + "</div>"; document.body.appendChild(s); s.onclick = function (e) { if (e.target === s) closeSheet(); }; return s; }
+function closeSheet() { var s = $("sh"); if (s) s.parentNode.removeChild(s); S.sheet = null; draw(); }
+
+function openAdd() {
+  needWrite();
+  var d = S.data, isDrv = S.role === "driver", opts = "";
+  for (var i = 0; i < 30; i++) { var iso = addDays(d.now.date, i), L = dayLabel(iso); opts += '<option value="' + iso + '"' + (iso === S.day ? " selected" : "") + ">" + L.n + " (" + L.w + ")</option>"; }
+  var pl = d.cfg.places.map(function (p) { return '<option value="' + esc(p) + '">' + esc(p) + "</option>"; }).join("") + '<option value="__other">Інше…</option>';
+  var html = "<h1>" + (isDrv ? "Нова поїздка" : "Шукаю попутника") + "</h1>" +
+    '<div class="seg"><button data-fdir="to" class="' + (S.dir === "to" ? "on" : "") + '">🏠 На дачу</button><button data-fdir="from" class="' + (S.dir === "from" ? "on" : "") + '">🌆 З дачі</button></div>' +
+    '<div class="two"><label>Дата<select id="fDate">' + opts + '</select></label><label>Час (необов\'язково)<input id="fTime" type="time"></label></div>' +
+    '<label>Місце в Одесі<select id="fPlace">' + pl + '</select></label><label id="fOtherL" style="display:none">Яке саме місце<input id="fOther" maxlength="30"></label>' +
+    '<div class="two"><label>' + (isDrv ? "Вільних місць" : "Скільки місць потрібно") + '<input id="fSeats" type="number" min="1" max="' + d.cfg.max_seats + '" value="' + (isDrv ? 3 : 1) + '" inputmode="numeric"></label>' +
+    '<label>Ваше ім\'я<input id="fName" maxlength="30" value="' + esc(lsGet("name")) + '"></label></div>' +
+    '<label>Телефон (необов\'язково; піде лише тому, хто забронює)<input id="fPhone" type="tel" maxlength="16" value="' + esc(lsGet("phone")) + '"></label>' +
+    '<label>Коментар (необов\'язково)<input id="fNote" maxlength="120" placeholder="' + (isDrv ? "напр. маленька машина, без багажу" : "напр. з валізою") + '"></label>' +
+    '<p class="err" id="fErr"></p><div class="act"><button class="btn" id="fSend">Додати</button><button class="btn sec" id="fCancel">Скасувати</button></div>';
+  var s = sheet(html);
+  var dir = S.dir;
+  Array.prototype.forEach.call(s.querySelectorAll("[data-fdir]"), function (b) { b.onclick = function () { dir = b.getAttribute("data-fdir"); Array.prototype.forEach.call(s.querySelectorAll("[data-fdir]"), function (x) { x.className = x === b ? "on" : ""; }); }; });
+  $("fPlace").onchange = function () { $("fOtherL").style.display = $("fPlace").value === "__other" ? "" : "none"; };
+  $("fCancel").onclick = closeSheet;
+  $("fSend").onclick = function () {
+    var btn = $("fSend"), place = $("fPlace").value === "__other" ? $("fOther").value : $("fPlace").value;
+    btn.disabled = true; $("fErr").textContent = "";
+    var name = $("fName").value, phone = $("fPhone").value;
+    api({ action: "ride_add", role: S.role, dir: dir, date: $("fDate").value, time: $("fTime").value, place: place, seats: Number($("fSeats").value), name: name, phone: phone, note: $("fNote").value })
+      .then(function (j) {
+        if (!j.ok) { btn.disabled = false; $("fErr").textContent = errText(j.error); return; }
+        lsSet("name", name); lsSet("phone", phone); S.dir = dir; S.day = $("fDate").value; S.scrolled = false;
+        closeSheet(); load(true);
+      });
+  };
+}
+
+function openBook(id) {
+  needWrite();
+  var r = S.data.rides.filter(function (x) { return x.id === id; })[0]; if (!r) return;
+  var isReq = r.role === "passenger", max = isReq ? 1 : Math.min(r.left, 8);
+  var html = "<h1>" + (isReq ? "Запропонувати місце" : "Забронювати місце") + "</h1>" +
+    '<p class="meta">' + esc(r.time || "протягом дня") + " · " + esc(r.name) + "</p>" +
+    (isReq ? "" : '<label>Скільки місць<input id="bSeats" type="number" min="1" max="' + max + '" value="1" inputmode="numeric"></label>') +
+    '<label>Ваше ім\'я<input id="bName" maxlength="30" value="' + esc(lsGet("name")) + '"></label>' +
+    '<label>Ваш телефон (необов\'язково; побачить лише автор запису)<input id="bPhone" type="tel" maxlength="16" value="' + esc(lsGet("phone")) + '"></label>' +
+    '<p class="note">Автору прийде повідомлення в Telegram з вашим контактом, а вам застосунок покаже його контакт.</p>' +
+    '<p class="err" id="bErr"></p><div class="act"><button class="btn" id="bSend">' + (isReq ? "Запропонувати" : "Забронювати") + '</button><button class="btn sec" id="bCancel">Закрити</button></div>';
+  sheet(html);
+  $("bCancel").onclick = closeSheet;
+  $("bSend").onclick = function () {
+    var btn = $("bSend"); btn.disabled = true; $("bErr").textContent = "";
+    var name = $("bName").value, phone = $("bPhone").value;
+    api({ action: "ride_book", id: id, seats: isReq ? 1 : Number($("bSeats").value), name: name, phone: phone }).then(function (j) {
+      if (!j.ok) { btn.disabled = false; $("bErr").textContent = errText(j.error); return; }
+      lsSet("name", name); lsSet("phone", phone);
+      var c = j.contact || {}, who = esc(c.name || "Автор");
+      var lines = "<p><b>" + who + "</b></p>" + (c.phone ? '<p>☎ <a href="tel:' + esc(c.phone) + '">' + esc(c.phone) + "</a></p>" : "") +
+        (c.username ? '<p>Telegram: <a href="https://t.me/' + esc(c.username) + '">@' + esc(c.username) + "</a></p>" : "");
+      S.sheet = null; var old = $("sh"); if (old) old.parentNode.removeChild(old);
+      sheet('<h1>✅ Готово</h1><div class="ok">' + lines + "</div><p class=\"note\">" + (j.notified ? "Автору надіслано повідомлення в Telegram, він зв'яжеться з вами." : "Автор ще не запускав бота, тому повідомлення не дійшло. Зв'яжіться з ним самі за контактом вище.") + '</p><div class="act"><button class="btn" id="bOk">Добре</button></div>');
+      $("bOk").onclick = function () { closeSheet(); load(true); };
+    });
+  };
+}
+
+function unbook(id, btn) { btn.disabled = true; api({ action: "ride_unbook", id: id }).then(function (j) { if (!j.ok) S.err = errText(j.error); load(true); }); }
+function del(id, btn) {
+  if (btn.getAttribute("data-sure") !== "1") { btn.setAttribute("data-sure", "1"); btn.textContent = "Точно видалити?"; return; }
+  btn.disabled = true; api({ action: "ride_del", id: id }).then(function (j) { if (!j.ok) S.err = errText(j.error); load(true); });
+}
+
+/* ---- запуск ---- */
+try { fetch(API_URL, { method: "POST", headers: { "Content-Type": "text/plain" }, keepalive: true, body: JSON.stringify({ action: "hit", app: "rides", initData: (tg && tg.initData) || "" }) }).catch(function () {}); } catch (e) {}
+load();
+setInterval(function () { if (!S.sheet && S.role && !document.hidden) load(true); }, 60000);
+</script>
+</body>
+</html>
